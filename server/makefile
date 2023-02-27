@@ -1,12 +1,9 @@
 #Maefile for socket programming 
 # Author - Sudarshan J
 
-all: aesdsocket
+CC=gcc
 
-CROSS_COMPILE =
-CC = gcc
-
-aesdsocket: aesdsocket.c
+all: aesdsocket.c
 		 $(CROSS_COMPILE)$(CC) aesdsocket.c -Wall -Werror -o aesdsocket
 		 
 
