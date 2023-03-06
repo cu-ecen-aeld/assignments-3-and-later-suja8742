@@ -4,7 +4,7 @@
 CC=gcc
 
 all: aesdsocket.c
-		 $(CROSS_COMPILE)$(CC) aesdsocket.c -Wall -Werror -o aesdsocket
+		 $(CROSS_COMPILE)$(CC) aesdsocket.c -Wall -Werror -o aesdsocket -lpthread -lrt
 		 
 
 clean:
