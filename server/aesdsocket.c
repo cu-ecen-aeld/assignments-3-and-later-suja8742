@@ -31,6 +31,7 @@
 
 #define BACKLOG_VAL 20 //Setting the maximum connection request limit while listening
 #define WRITE_BUFFER_SIZE 512
+#define INITIAL_BUFF_SIZE 1024
 /* Global variables */
 int sock_fd = -1;
 //int acc_fd = -1;
@@ -196,12 +197,12 @@ void* threadfunc(void* thread_param)
     struct thread_data_t *thread_local_stg = (struct thread_data_t *)thread_param;
 
     //Creating receive buffer to recieve and store incoming packets
-    char buffer[1024];
+    char buffer[INITIAL_BUFF_SIZE];
 
     //Allocate storage buffer
-    char *packet_buffer = (char *) malloc(1024);
+    char *packet_buffer = (char *) malloc(INITIAL_BUFF_SIZE);
 
-    int packet_buffer_len = 1024;
+    int packet_buffer_len = INITIAL_BUFF_SIZE;
 
     //String to hold IP address of client from the inet_nto fn
     char address_str[INET_ADDRSTRLEN];
@@ -236,11 +237,11 @@ void* threadfunc(void* thread_param)
     {
         if(bytes_cnt + bytes_received > packet_buffer_len)
         {
-            char *tmp = (char *)realloc(packet_buffer, packet_buffer_len + 1024);
+            char *tmp = (char *)realloc(packet_buffer, packet_buffer_len + INITIAL_BUFF_SIZE);
                 if(tmp)
                 {
                     packet_buffer = tmp; //Assign the new pointer to the buffer
-                    packet_buffer_len+=1024; //Lengt increases by 1024. 
+                    packet_buffer_len+=INITIAL_BUFF_SIZE; //Lengt increases by 1024. 
                     packet_buffer_size_count+=1; //Number of times realloced
                 }
 
@@ -262,32 +263,32 @@ void* threadfunc(void* thread_param)
             }
         }
 
-        memcpy(packet_buffer + (packet_buffer_size_count -1)*1024 + bytes_cnt, buffer, bytes_received);
+        memcpy(packet_buffer + (packet_buffer_size_count -1)*INITIAL_BUFF_SIZE + bytes_cnt, buffer, bytes_received);
 
         //Check the completeness of data packet and assign bytes to write based on the value of nullchar_it
         if(nullterm_flag == 1)
         {
-            write_len = (packet_buffer_size_count -1)*1024 + nullchar_it + bytes_cnt;
+            write_len = (packet_buffer_size_count -1)*INITIAL_BUFF_SIZE + nullchar_it + bytes_cnt;
             bytes_cnt = 0;
             break;
         }
 
         else
         {
-            if((i == bytes_received) && (bytes_received < 1024))
+            if((i == bytes_received) && (bytes_received < INITIAL_BUFF_SIZE))
             {
                 bytes_cnt += bytes_received;
             }
 
-            else if(bytes_received == 1024)
+            else if(bytes_received == INITIAL_BUFF_SIZE)
             {
-                char* tmp = (char *)realloc(packet_buffer, packet_buffer_len + 1024);
+                char* tmp = (char *)realloc(packet_buffer, packet_buffer_len + INITIAL_BUFF_SIZE);
             
 
                 if(tmp)
                 {
                     packet_buffer = tmp;
-                    packet_buffer_len = packet_buffer_len + 1024;
+                    packet_buffer_len = packet_buffer_len + INITIAL_BUFF_SIZE;
                     packet_buffer_size_count +=1;
                 }
 
