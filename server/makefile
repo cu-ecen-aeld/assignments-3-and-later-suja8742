@@ -8,8 +8,13 @@ LDFLAGS ?= -pthread -lrt
 SRC = aesdsocket.c
 OUTPUT = aesdsocket
 
-all:
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $(OUTPUT) $(SRC) 
+all:aesdsocket
+
+aesdsocket:aesdsocket.c
+	$(CC) $(SRC) $(CFLAGS) -o $@ $(LDFLAGS)
+
+.c.o: $(SRC)
+	$(CC) $(CFLAGS) -c $<
 
 clean:
 	-rm -f *.o $(OUTPUT) *.elf *.map
