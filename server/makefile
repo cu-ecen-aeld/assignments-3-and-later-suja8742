@@ -1,11 +1,20 @@
-#Maefile for socket programming 
-# Author - Sudarshan J
+#MAKEFILE MODIFIED FOR YOCTO
+#AUTHOR - SUDARSHAN J
 
-CC=gcc
+CROSS_COMPILE=
+CC 	?= $(CROSS_COMPILE)gcc
+CFLAGS	?= -g -Werror -Wall
+LDFLAGS ?= -pthread -lrt
+SRC = aesdsocket.c
+OUTPUT = aesdsocket
 
-all: aesdsocket.c
-		 $(CROSS_COMPILE)$(CC) aesdsocket.c -Wall -Werror -o aesdsocket
-		 
+all:aesdsocket
+
+aesdsocket:aesdsocket.c
+	$(CC) $(SRC) $(CFLAGS) -o $@ $(LDFLAGS)
+
+.c.o: $(SRC)
+	$(CC) $(CFLAGS) -c $<
 
 clean:
-	rm -rf *.o aesdsocket
+	-rm -f *.o $(OUTPUT) *.elf *.map

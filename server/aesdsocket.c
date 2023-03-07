@@ -1,8 +1,11 @@
 /* Includes */
 
+
+//#define _GNU_SOURCE 
+#include <sys/socket.h>
+
 #include <stdio.h>
 #include <string.h>
-#include <sys/socket.h>
 #include <errno.h>
 #include <syslog.h>
 #include <netdb.h>
@@ -15,43 +18,63 @@
 #include <linux/fs.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <pthread.h>
+//#include <thread.h>
+#include <sys/time.h>
+
 
 
 /* Macros */
 
-#define BACKLOG_VAL 20 //Setting the maximum connection request limit while listening
 
+
+
+#define BACKLOG_VAL 20 //Setting the maximum connection request limit while listening
+#define WRITE_BUFFER_SIZE 512
+#define INITIAL_BUFF_SIZE 1024
 /* Global variables */
 int sock_fd = -1;
-int acc_fd = -1;
-int filetotest_fd = -1;
-char *packet_buffer;
+//int acc_fd = -1;
+int thread_com = 0;     
+int filetotest_fd = -1; //Test file desc
+pthread_mutex_t mutex; //Mutex init
+timer_t timer; //Timer used to get timestamp.
+
+//Prototypes to avoid the implicit declaration warning
+static void append_timestamp();
+static int timer_10();
 
 void sig_handler(int signum)
 {
-    if(signum == SIGINT)
+    if(signum == SIGINT || signum == SIGTERM)
     {
+        thread_com = 1;
         syslog(LOG_DEBUG, "SIGINT received, exiting...");
     }
 
-    else if(signum == SIGTERM)
+    if(signum == SIGALRM)
     {
-        syslog(LOG_DEBUG, "SIGTERM received, exiting...");
+        append_timestamp();
+        syslog(LOG_DEBUG, "SIGALARM");
     }
 
-    free(packet_buffer);
+}
 
-    int status = close(sock_fd);
+/* Seperating exit handler for signal safety */
+void exit_handler()
+{
+    //Closing sock_fd
+   int status = close(sock_fd);
     if(status < 0)
     {
         syslog(LOG_ERR, "Unable to close socket FD with an error: %d", errno);
     }
 
-    status = close(acc_fd);
-    if(status < 0)
-    {
-        syslog(LOG_ERR, "Unable to close socket FD with an error: %d", errno);
-    }
+    // status = close(acc_fd);
+    // if(status < 0)
+    // {
+    //     syslog(LOG_ERR, "Unable to close socket FD with an error: %d", errno);
+    // }
 
     status = close(filetotest_fd);
     if(status < 0)
@@ -65,8 +88,45 @@ void sig_handler(int signum)
         syslog(LOG_ERR, "Unable to close socket FD with an error: %d", errno);
     }
 
+    //Destroy Mutex
+    pthread_mutex_destroy(&mutex);
+    timer_delete(timer);
+
+
     closelog();
     exit(EXIT_SUCCESS);
+}
+
+/* Register and initialize signals */
+
+int signal_init()
+{
+    struct sigaction act;
+    act.sa_handler = &sig_handler;
+
+    sigfillset(&act.sa_mask);
+
+    act.sa_flags = 0;
+
+    if(sigaction(SIGINT, &act, NULL) == -1)
+    {
+        perror("sigaction");
+        exit(EXIT_FAILURE);
+    }
+
+    if(sigaction(SIGTERM, &act, NULL) == -1)
+    {
+        perror("sigaction");
+        exit(EXIT_FAILURE);
+    }
+
+    if(sigaction(SIGALRM, &act, NULL) == -1)
+    {
+        perror("sigaction");
+        exit(EXIT_FAILURE);
+    }
+
+    return EXIT_SUCCESS;
 
 }
 
@@ -107,8 +167,286 @@ static int daemon_creation()
     return 0;
 }
 
+struct thread_data_t
+{
+    pthread_t threadid; //Thread ID for bookkeeping
+    int thread_term_flag; //Flag to check if the thread terminated. 
+    int client_connected_fd; //File descriptor for connection with a client. 
+    struct sockaddr_in *client_addr; //Client Address
+};
+
+struct Node
+{
+    struct thread_data_t ll_data;
+    struct Node* next;
+};
+
+//Credit: GeeksforGeeks
+//Allocate a node into a linked list at the HEAD. 
+void allocate_node(struct Node** head_ref, struct Node *node)
+{
+    node->next = *head_ref;
+    *head_ref = node;
+}
+
+/* THREADS SPAWNING */
+
+void* threadfunc(void* thread_param)
+{
+
+    struct thread_data_t *thread_local_stg = (struct thread_data_t *)thread_param;
+
+    //Creating receive buffer to recieve and store incoming packets
+    char buffer[INITIAL_BUFF_SIZE];
+
+    //Allocate storage buffer
+    char *packet_buffer = (char *) malloc(INITIAL_BUFF_SIZE);
+
+    int packet_buffer_len = INITIAL_BUFF_SIZE;
+
+    //String to hold IP address of client from the inet_nto fn
+    char address_str[INET_ADDRSTRLEN];
+
+    //Variable to store returned string from receive
+    int bytes_received;
+
+    //Set this flag when \n is received to terminate
+    int nullterm_flag;
+
+    //Temporary variable inside the for loop for \n ind.
+    int nullchar_it = 1; 
+
+    //Variable to track the size of the packet buffer. Value of this multiplied by the standard size 1024 used when computing bytes to be written and memcpy operation on the packet buffer. 
+    int packet_buffer_size_count = 1;
+
+    //Variable to indicate number of bytes of data to be appended to the file in /var/tmp/
+    int write_len = 0;
+
+    //Variable to check the file size after writes are performed
+    int file_size = 0;
+
+    //Bytes from packets from recv() without \n and less than 1024 bytes
+    int bytes_cnt = 0;
+
+    //Attempting to print the IP address of the accepted client connection on success of accept using the inet_ntop function
+   // struct sockaddr_in *ptr = (struct sockaddr_in *)&accept_addr;
+   // syslog(LOG_DEBUG, "Accepted connection from IP : %s", inet_ntop(AF_INET, &ptr->sin_addr, address_str, sizeof(address_str)));
+
+        //Receive all bytes from client. Handling the case where \n s not sent or length < 1024
+    while((bytes_received = recv(thread_local_stg->client_connected_fd, buffer, sizeof(buffer), 0)) > 0) 
+    {
+        if(bytes_cnt + bytes_received > packet_buffer_len)
+        {
+            char *tmp = (char *)realloc(packet_buffer, packet_buffer_len + INITIAL_BUFF_SIZE);
+                if(tmp)
+                {
+                    packet_buffer = tmp; //Assign the new pointer to the buffer
+                    packet_buffer_len+=INITIAL_BUFF_SIZE; //Lengt increases by 1024. 
+                    packet_buffer_size_count+=1; //Number of times realloced
+                }
+
+                else
+                {
+                    printf("Malloc failure");
+                }
+        }
+
+        int i;
+        //Check for \n for the end of a packet received. 
+        for(i = 0; i < bytes_received; i++)
+        {
+            if(buffer[i] == '\n')
+            {
+                nullterm_flag = 1;
+                nullchar_it = i+1;
+                break;
+            }
+        }
+
+        memcpy(packet_buffer + (packet_buffer_size_count -1)*INITIAL_BUFF_SIZE + bytes_cnt, buffer, bytes_received);
+
+        //Check the completeness of data packet and assign bytes to write based on the value of nullchar_it
+        if(nullterm_flag == 1)
+        {
+            write_len = (packet_buffer_size_count -1)*INITIAL_BUFF_SIZE + nullchar_it + bytes_cnt;
+            bytes_cnt = 0;
+            break;
+        }
+
+        else
+        {
+            if((i == bytes_received) && (bytes_received < INITIAL_BUFF_SIZE))
+            {
+                bytes_cnt += bytes_received;
+            }
+
+            else if(bytes_received == INITIAL_BUFF_SIZE)
+            {
+                char* tmp = (char *)realloc(packet_buffer, packet_buffer_len + INITIAL_BUFF_SIZE);
+            
+
+                if(tmp)
+                {
+                    packet_buffer = tmp;
+                    packet_buffer_len = packet_buffer_len + INITIAL_BUFF_SIZE;
+                    packet_buffer_size_count +=1;
+                }
+
+                else
+                {
+                    perror("Memory allocation failure");
+                }
+            }
+        }
+
+    }
+
+    if(bytes_received == -1)
+    {
+        syslog(LOG_ERR, "recv() error, errno: %d\n", errno);
+        goto cleanup_label; //Approach for thread safe cleanup
+    }
+
+    
+    if(nullterm_flag == 1)
+    {
+        nullterm_flag = 0;
+
+        //Mutex lock while access write operation to the file, for thread safety. 
+        int ret = pthread_mutex_lock(&mutex);
+        if(ret != 0)
+        {
+            perror("Mutex Lock");
+        }
+        //Write obtained packet to the file
+        int ret_wr = write(filetotest_fd, packet_buffer, write_len);
+        file_size += ret_wr; //Adding to the current file
+
+        lseek(filetotest_fd, 0, SEEK_SET); //Set the file descriptor to the top of the file
+
+        char *read_buffer = NULL;
+        int read_buffer_size;
+
+        if(file_size < WRITE_BUFFER_SIZE)
+        {
+            read_buffer = (char*)malloc(file_size);
+            read_buffer_size = file_size;
+        }
+
+        else
+        {
+            read_buffer = (char*)malloc(WRITE_BUFFER_SIZE);
+            read_buffer_size = WRITE_BUFFER_SIZE;
+        }
+
+        if(read_buffer == NULL)
+        {
+            perror("Read buffer allocation failed.");
+        }
+
+        //Reading into the read buffer
+        ssize_t bytes_read;
+        int bytes_sent;
+        
+        while((bytes_read = read(filetotest_fd, read_buffer, read_buffer_size)) > 0)
+        {
+            bytes_sent = send(thread_local_stg->client_connected_fd, read_buffer, bytes_read, 0);
+
+            if(bytes_sent == -1)
+            {
+                syslog(LOG_ERR, "Error sending, errno: %d", errno);
+                break;
+            }
+        }
+
+        if(bytes_read == -1)
+        {
+            perror("Read");
+        }
+
+        free(read_buffer);
+
+        ret = pthread_mutex_unlock(&mutex);
+
+        if(ret!=0)
+        {
+            perror("Mutex Unlock");
+        }
+    }
+
+    cleanup_label: free(packet_buffer);
+    
+    thread_local_stg->thread_term_flag = 1;
+
+      
+    close(thread_local_stg->client_connected_fd);
+    syslog(LOG_DEBUG, "Closed connection from %s", address_str);
+    return NULL;
+}
+
+/* TIMER SECTION.*/
+
+static void append_timestamp()
+{
+    time_t timestamp;
+    char time_buffer[40];
+    char write_buffer[100];
+
+    struct tm* tm_info;
+
+    time(&timestamp);
+    tm_info = localtime(&timestamp);
+
+    strftime(time_buffer, 40, "%a, %d %b %Y %T %z", tm_info);
+    sprintf(write_buffer, "timestamp:%s\n", time_buffer);
+
+    lseek(filetotest_fd, 0, SEEK_END);
+
+    pthread_mutex_lock(&mutex);
+    int nr = write(filetotest_fd, write_buffer, strlen(write_buffer));
+    if(nr < 0)
+    {
+        perror("write");
+    }
+
+    pthread_mutex_unlock(&mutex);
+
+}
+
+static int timer_10()
+{
+    int status = timer_create(CLOCK_REALTIME, NULL, &timer);
+    if(status == -1)
+    {
+        perror("timer create");
+        return EXIT_FAILURE;
+    }
+
+    
+    struct itimerspec delay;
+
+    int ret;
+
+delay.it_value.tv_sec = 10;
+delay.it_value.tv_nsec = 0;
+delay.it_interval.tv_sec = 10;
+delay.it_interval.tv_nsec = 0;
+
+ret = timer_settime(timer, 0, &delay, NULL);
+if(ret)
+{
+    perror("timer settime");
+    return EXIT_FAILURE;
+}
+
+
+return EXIT_SUCCESS;
+}
+
 int main(int argc, char **argv)
 {
+    
+    
     
     //Log open for syslog
     openlog(NULL, 0, LOG_USER);
@@ -130,11 +468,17 @@ int main(int argc, char **argv)
         }
     }
 
-    signal(SIGINT, sig_handler); //Register the signal handler for SIGINT
-    signal(SIGTERM, sig_handler); //Register signal handler for SIGTERM
+    //Call to init signals
+    int sig_ret_status = signal_init();
+
+    if(sig_ret_status < 0)
+    {
+        printf("Signal init error\n");
+    }
 
     //Set socket parameters to stream (TCP/IP) and AF_INET for IPv4
     sock_fd = socket(AF_INET, SOCK_STREAM, 0);
+    //fcntl(sock_fd, F_SETFL, O_NONBLOCK);
     
     if(sock_fd < 0)
     {
@@ -184,13 +528,13 @@ int main(int argc, char **argv)
 
      if(daemon_flag == 1)
     {
-        int retval = daemon_creation();
-        if(retval == -1)
+        int ret_d = daemon_creation();
+        if(ret_d == -1)
         {
             syslog(LOG_ERR, "Error creating a daemon");
         }
 
-        else if(retval == 0)
+        else if(ret_d == 0)
         {
             syslog(LOG_DEBUG, "Created Daemon");
         }
@@ -213,144 +557,108 @@ int main(int argc, char **argv)
         syslog(LOG_ERR, "Error opening the file in this location with code : %d", errno);
     }
 
-    //Creating receive buffer to recieve and store incoming packets
-    char buffer[1024];
-
-    //Allocate storage buffer
-    packet_buffer = (char *) malloc(1024);
-
-    int packet_buffer_len = 1024;
-
-    //String to hold IP address of client from the inet_nto fn
-    char address_str[INET_ADDRSTRLEN];
-
-    //Variable to store returned string from receive
-    int bytes_received;
-
-    //Set this flag when \n is received to terminate
-    int nullterm_flag;
-
-    //Temporary variable inside the for loop for \n ind.
-    int nullchar_it = 1; 
-
-    //Variable to track the size of the packet buffer. Value of this multiplied by the standard size 1024 used when computing bytes to be written and memcpy operation on the packet buffer. 
-    int packet_buffer_size_count = 1;
-
-    //Variable to indicate number of bytes of data to be appended to the file in /var/tmp/
-    int write_len = 0;
-
-    //Variable to check the file size after writes are performed
-    int file_size = 0;
-
+    timer_10(); //Start the 10s timer to facilitate the append timestamp every 10s in the opened file. 
+    pthread_mutex_init(&mutex, NULL);
     struct sockaddr_storage accept_addr;
 
     socklen_t accept_addr_len = sizeof(accept_addr);
-    
 
-    while(1)
+    struct Node *head = NULL;
+    struct Node *current, *previous;
+
+    while(!thread_com)
     {
-        acc_fd = accept(sock_fd, (struct sockaddr *)&accept_addr, &accept_addr_len); //Accept incoming connections in a forever loop as specificed by instructions. 
+        int acc_fd = accept(sock_fd, (struct sockaddr *)&accept_addr, &accept_addr_len); //Accept incoming connections in a forever loop as specificed by instructions.
 
         if(acc_fd < 0)
-        {
-            perror("accept");
-            continue; //Continue trying to accept if failed
-        }
-
-        //Attempting to print the IP address of the accepted client connection on success of accept using the inet_ntop function
-        struct sockaddr_in *ptr = (struct sockaddr_in *)&accept_addr;
-        syslog(LOG_DEBUG, "Accepted connection from IP : %s", inet_ntop(AF_INET, &ptr->sin_addr, address_str, sizeof(address_str)));
-
-        //Receive all bytes from client
-        while((bytes_received = recv(acc_fd, buffer, sizeof(buffer), 0)) > 0)
-        {
-            printf("Verifying the number of bytes received: %d\n", bytes_received);
-
-            //Check for \n for the end of a packet received. 
-            for(int i = 0; i < bytes_received; i++)
+        {   
+            if(errno == EINTR)
             {
-                if(buffer[i] == '\n')
-                {
-                    nullterm_flag = 1;
-                    nullchar_it = i+1;
-                    break;
-                }
-            }
 
-            memcpy(packet_buffer + (packet_buffer_size_count -1)*1024, buffer, bytes_received);
-
-            //Check the completeness of data packet and assign bytes to write based on the value of nullchar_it
-            if(nullterm_flag == 1)
-            {
-                write_len = (packet_buffer_size_count -1)*1024 + nullchar_it;
-                break;
+                continue; //Continue trying to accept if failed
             }
 
             else
             {
-                //Increase the size of the packet buffer by 1024 if no Null terminator is found in the buffer to accomodate full packet. 
-                char *tmp = (char *)realloc(packet_buffer, (packet_buffer_len + 1024));
-
-                if(tmp != NULL)
-                {
-                    packet_buffer = tmp;
-                    packet_buffer_len = packet_buffer_len + 1024;
-                    packet_buffer_size_count +=1;
-                }
-
-                else
-                {
-                    perror("Memory allocation failure");
-                }
+                perror("accept");
+                continue;
             }
-
         }
 
-        printf("Packet buffer size obtained : %d\n", write_len);
+        //Create new node on the LL allocating the structure parameters
+        struct Node *new_node = (struct Node *)malloc(sizeof(struct Node));
+        new_node->ll_data.thread_term_flag = 0;
+        new_node->ll_data.client_connected_fd = acc_fd;
+        new_node->ll_data.client_addr = (struct sockaddr_in *)&accept_addr;
 
-        if(nullterm_flag == 1)
+        //Create a thread for each unit
+        int ret = pthread_create(&(new_node->ll_data.threadid), NULL, threadfunc, &(new_node->ll_data));
+        if(ret != 0)
         {
-            nullterm_flag = 0;
+            printf("Error in pthread_create with err number: %d", errno);
 
-            //Write obtained packet to the file
-            int ret_wr = write(filetotest_fd, packet_buffer, write_len);
-            file_size += ret_wr; //Adding to the current file
-
-            lseek(filetotest_fd, 0, SEEK_SET); //Set the file descriptor to the top of the file
-
-            char *read_buffer = (char*)malloc(file_size);
-
-            if(read_buffer == NULL)
-            {
-                perror("Read buffer allocation failed.");
-            }
-
-            //Reading into the read buffer
-            ssize_t bytes_read = read(filetotest_fd, read_buffer, file_size);
-            if(bytes_read == -1)
-            {
-                perror("Read");
-            }
-
-            //Return value from the send functon
-            int bytes_sent = send(acc_fd, read_buffer, file_size, 0);
-
-            if(bytes_sent < 0)
-            {
-                printf("Error sending on the socket connection to client.");
-            }
-
-            free(read_buffer);
-
-            //Take everything back to original state
-            packet_buffer = realloc(packet_buffer, 1024);
-            packet_buffer_size_count = 1;
-            packet_buffer_len = 1024;
         }
 
-        close(acc_fd);
-        syslog(LOG_DEBUG, "Closed connection from %s", address_str);
+        else if(ret == 0)
+        {
+            printf("Thread created successfully. Thread ID: %lu\n", new_node->ll_data.threadid);
+        }
+
+        allocate_node(&head, new_node);
+
+
+        //Traverse all nodes to remove a node from the list
+        current = head;
+        previous = head;
+
+        while(current != NULL)
+        {
+            if((current->ll_data.thread_term_flag == 1) && (current == head))
+            {
+                printf("Exited from the Thread with id %lu\n", current->ll_data.threadid);
+                head = current->next;
+                current->next = NULL;
+                pthread_join(current->ll_data.threadid, NULL);
+                free(current);
+                current = head;
+            }
+
+            else if((current->ll_data.thread_term_flag == 1) && (current != head))
+            {
+                //Deleting other nodes
+                printf("Exited successfully from Thread %lu\n", (current->ll_data.threadid));
+                previous->next = current->next;
+                current->next = NULL;
+                pthread_join(current->ll_data.threadid, NULL);
+                free(current);
+                current = previous->next;
+            }
+
+            else
+            {
+                //Travers with the previous behind the current
+                previous = current;
+                current = current->next;
+            }
+        }
+
+        
     }
+
+    //Valgrind extra thread err: Freeing head node if it exists and corresponding thread has been completed
+
+    if(head)
+    {
+        if(head->ll_data.thread_term_flag == 1)
+        {
+            pthread_join(head->ll_data.threadid, NULL);
+            free(head);
+            head = NULL;
+        }
+    }
+
+    //Cleanup step with signal safety in mind. 
+    exit_handler();
 
     return 0;
 
