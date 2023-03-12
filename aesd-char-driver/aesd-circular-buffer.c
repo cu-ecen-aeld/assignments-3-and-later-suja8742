@@ -16,6 +16,8 @@
 
 #include "aesd-circular-buffer.h"
 
+
+
 /**
  * @param buffer the buffer to search for corresponding offset.  Any necessary locking must be performed by caller.
  * @param char_offset the position to search for in the buffer list, describing the zero referenced
@@ -32,7 +34,61 @@ struct aesd_buffer_entry *aesd_circular_buffer_find_entry_offset_for_fpos(struct
     /**
     * TODO: implement per description
     */
-    return NULL;
+
+    uint8_t index_readptr; //Used as a local var equivalent of the read pointer in the structure. 
+    int counter = 0;       //Checks how many iterations are going through the loop
+
+    index_readptr = buffer->out_offs;
+
+    if(buffer == NULL)
+    {
+        return NULL;
+    }
+
+    if(entry_offset_byte_rtn == NULL)
+    {
+        return NULL;
+    }
+
+    while( (char_offset >= 0) ) //Check for the offset. 
+    {
+
+        if(counter == AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED)  //This indicates that the total offset size is greater than the total size of the buffer. 
+        {
+            return NULL;
+        }
+
+        if(index_readptr == AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED)
+        {
+            index_readptr = 0;
+        }
+
+        if(char_offset > (buffer->entry[index_readptr].size) - 1)   //Reduce the offset by index_size
+        {
+            char_offset = (char_offset - buffer->entry[index_readptr].size);
+            index_readptr++;
+        }
+
+        else if(char_offset == buffer->entry[index_readptr].size)   //offset is the same as size. 
+        {
+            *entry_offset_byte_rtn = (buffer->entry[index_readptr].size - 1);  
+            char_offset = 0;
+            break;  //Update and exit the loop
+        }
+
+        else
+        {
+            *entry_offset_byte_rtn = char_offset;
+            char_offset = 0;
+            break;
+        }
+        
+        counter++;
+    }
+
+    return &buffer->entry[index_readptr];
+    
+
 }
 
 /**
@@ -47,6 +103,44 @@ void aesd_circular_buffer_add_entry(struct aesd_circular_buffer *buffer, const s
     /**
     * TODO: implement per description
     */
+
+    if(buffer == NULL)
+    {
+        return;
+    }
+
+    if(add_entry == NULL)
+    {
+        return;
+    }
+
+    /* Instering entry on write pointer */
+    buffer->entry[buffer->in_offs].buffptr = add_entry->buffptr;
+    buffer->entry[buffer->in_offs].size = add_entry->size;
+    buffer->in_offs++;
+
+    /* Handling the situations after the first roll-arounds.  */
+
+    if(buffer->in_offs == AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED)
+    {
+        buffer->in_offs = 0;
+    }
+
+    if(buffer->full)
+    {
+        buffer->out_offs++;
+
+        if(buffer->out_offs == AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED)
+        {
+            buffer->out_offs = 0;
+        }
+    }
+    if((buffer->out_offs == buffer->in_offs) && (!buffer->full))
+    {
+        buffer->full = 1;
+    }
+    return;
+
 }
 
 /**
