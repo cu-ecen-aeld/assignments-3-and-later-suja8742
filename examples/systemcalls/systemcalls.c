@@ -1,4 +1,12 @@
 #include "systemcalls.h"
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <linux/fs.h>
+#include <errno.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <stdlib.h>
 
 /**
  * @param cmd the command to execute with system()
@@ -16,6 +24,13 @@ bool do_system(const char *cmd)
  *   and return a boolean true if the system() call completed with success
  *   or false() if it returned a failure
 */
+    int ret;
+    ret = system(cmd);
+    if(ret == -1)
+    {
+        printf("Error executing system(). Error type: %d\n", errno);
+        return false;
+    }
 
     return true;
 }
@@ -58,6 +73,69 @@ bool do_exec(int count, ...)
  *   as second argument to the execv() command.
  *
 */
+    pid_t pid_ch;
+
+    //Create a new child process
+    pid_ch = fork(); //fork() returns pid
+    if(pid_ch == -1)
+    {
+        perror("Fork error");
+        return false;
+    }
+
+    else if(pid_ch == 0)
+    {
+        //execv which replaces the existing parent process
+        int ret;
+        ret = execv(command[0], command);
+
+        if(ret == -1)
+        {
+            perror("execv returned error");
+        }
+
+        printf("Error executing command execv. Error type: %d\n", errno);
+        exit(1);
+    }
+
+    else
+    {
+        int status;
+        pid_t pid_w;
+        pid_w = waitpid(pid_ch, &status, 0); //Using waitpid to pass child process pid
+        
+        if(pid_w == -1)
+        {
+            printf("Error executing waitpid. Error type: %d\n", errno);
+            perror("Waitpid error");
+            return false;
+        }
+
+        else
+        {
+            if(WIFEXITED(status)) //Only if this returns true, WEXITSTATUS is checked, man WIFEXITED().
+            {
+                if(WEXITSTATUS(status) == 0)
+                {
+
+                    printf("Child exited normally.\n");
+                    return true;
+                }
+
+                else
+                {
+                    return false;
+                }
+            }
+
+            else
+            {
+                return false;
+            }
+        }
+    }
+
+    
 
     va_end(args);
 
@@ -92,7 +170,67 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
  *   The rest of the behaviour is same as do_exec()
  *
 */
+    int kid_pid;
+    int fd = open(outputfile, O_WRONLY | O_TRUNC | O_CREAT, 0644);
+    if(fd < 0)
+    {
+        perror("open");
+        return false;
+    }
+    switch(kid_pid = fork())
+    {
+        case -1: 
+        perror("fork");
+        return false;
 
+        case 0:
+        if(dup2(fd, 1) < 0)
+        {
+            perror("dup2");
+            return false;
+        }
+        close(fd);
+        execv(command[0], command);
+        perror("execv");
+        exit(1);
+
+        default:
+            close(fd);
+            int status;
+            pid_t pid_w;
+            pid_w = waitpid(kid_pid, &status, 0); //Using waitpid to pass child process pid
+        
+            if(pid_w == -1)
+            {
+                printf("Error executing waitpid. Error type: %d\n", errno);
+                perror("Waitpid error");
+                return false;
+            }
+            else
+            {
+                if(WIFEXITED(status)) //Only if this returns true, WEXITSTATUS is checked, man WIFEXITED().
+                {
+                    if(WEXITSTATUS(status) == 0)
+                    {
+
+                        printf("Child exited normally.\n");
+                        return true;
+                    }
+
+                    else
+                    {   
+                        return false;
+                    }
+                }
+
+                else
+                {
+                    return false;
+                }
+            }
+
+         
+    }
     va_end(args);
 
     return true;

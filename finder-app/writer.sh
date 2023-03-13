@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 
 # A1
 # Author: Sudarshan J
