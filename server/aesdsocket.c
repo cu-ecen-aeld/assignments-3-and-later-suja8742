@@ -32,7 +32,7 @@
 int sock_fd = -1;
 //int acc_fd = -1;
 int thread_com = 0;     
-int filetotest_fd = -1; //Test file 
+//int filetotest_fd = -1; //Test file 
 #ifndef USE_AESD_CHAR_DEVICE
 pthread_mutex_t mutex; //Mutex init
 timer_t timer; //Timer used to get timestamp.
@@ -72,11 +72,11 @@ void exit_handler()
         syslog(LOG_ERR, "Unable to close socket FD with an error: %d", errno);
     }
 
-    status = close(filetotest_fd);
+    /* status = close(filetotest_fd);
     if(status < 0)
     {
         syslog(LOG_ERR, "Unable to close socket FD with an error: %d", errno);
-    }
+    } */
     
     #ifndef USE_AESD_CHAR_DEVICE
     unlink("/var/tmp/aesdsocketdata");
@@ -117,13 +117,13 @@ int signal_init()
         perror("sigaction");
         exit(EXIT_FAILURE);
     }
-
+    #ifndef USE_AESD_CHAR_DEVICE
     if(sigaction(SIGALRM, &act, NULL) == -1)
     {
         perror("sigaction");
         exit(EXIT_FAILURE);
     }
-
+    #endif
     return EXIT_SUCCESS;
 
 }
@@ -320,11 +320,20 @@ void* threadfunc(void* thread_param)
         }
         #endif
 
+        #ifdef USE_AESD_CHAR_DEVICE
+        char *filename = "/dev/aesdchar";
+        #else
+        char *filename = "/var/tmp/aesdsocketdata";
+        #endif
+
         //Write obtained packet to the file
+        int filetotest_fd = open(filename, O_RDWR | O_CREAT | O_APPEND, S_IWUSR | S_IRUSR | S_IWGRP | S_IRGRP | S_IROTH);
         int ret_wr = write(filetotest_fd, packet_buffer, write_len);
         file_size += ret_wr; //Adding to the current file
 
+        #ifndef USE_AESD_CHAR_DEVICE
         lseek(filetotest_fd, 0, SEEK_SET); //Set the file descriptor to the top of the file
+        #endif
 
         char *read_buffer = NULL;
         int read_buffer_size;
@@ -366,14 +375,17 @@ void* threadfunc(void* thread_param)
             perror("Read");
         }
 
+        close(filetotest_fd);
         free(read_buffer);
 
+        #ifndef USE_AESD_CHAR_DEVICE
         ret = pthread_mutex_unlock(&mutex);
 
         if(ret!=0)
         {
             perror("Mutex Unlock");
         }
+        #endif
     }
 
     cleanup_label: free(packet_buffer);
@@ -388,6 +400,7 @@ void* threadfunc(void* thread_param)
 
 /* TIMER SECTION.*/
 
+#ifndef USE_AESD_CHAR_DEVICE
 static void append_timestamp()
 {
     time_t timestamp;
@@ -444,6 +457,7 @@ if(ret)
 
 return EXIT_SUCCESS;
 }
+#endif
 
 int main(int argc, char **argv)
 {
@@ -552,15 +566,21 @@ int main(int argc, char **argv)
     }
 
     //permissions for this file is usr=rw, g=rw, oth = r
-    filetotest_fd = open(filename, O_RDWR | O_CREAT | O_TRUNC, S_IWUSR | S_IRUSR | S_IWGRP | S_IRGRP | S_IROTH);
+  //  filetotest_fd = open(filename, O_RDWR | O_CREAT | O_TRUNC, S_IWUSR | S_IRUSR | S_IWGRP | S_IRGRP | S_IROTH);
 
-    if(filetotest_fd < 0)
-    {
-        syslog(LOG_ERR, "Error opening the file in this location with code : %d", errno);
-    }
+   // if(filetotest_fd < 0)
+  //  {
+   //     syslog(LOG_ERR, "Error opening the file in this location with code : %d", errno);
+  //  }
 
+    #ifndef USE_AESD_CHAR_DEVICE
     timer_10(); //Start the 10s timer to facilitate the append timestamp every 10s in the opened file. 
+    #endif
+
+    #ifndef USE_AESD_CHAR_DEVICE
     pthread_mutex_init(&mutex, NULL);
+    #endif
+
     struct sockaddr_storage accept_addr;
 
     socklen_t accept_addr_len = sizeof(accept_addr);
