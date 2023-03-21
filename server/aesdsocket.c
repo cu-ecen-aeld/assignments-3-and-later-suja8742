@@ -1,9 +1,7 @@
 /* Includes */
 
 
-//#define _GNU_SOURCE 
 #include <sys/socket.h>
-
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
@@ -19,30 +17,32 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <pthread.h>
-//#include <thread.h>
 #include <sys/time.h>
 
-
-
 /* Macros */
-
-
 
 
 #define BACKLOG_VAL 20 //Setting the maximum connection request limit while listening
 #define WRITE_BUFFER_SIZE 512
 #define INITIAL_BUFF_SIZE 1024
 /* Global variables */
+
+//Macro switch used as suggested in the videos, set to 1 by default
+#define USE_AESD_CHAR_DEVICE 1
 int sock_fd = -1;
 //int acc_fd = -1;
 int thread_com = 0;     
-int filetotest_fd = -1; //Test file desc
+int filetotest_fd = -1; //Test file 
+#ifndef USE_AESD_CHAR_DEVICE
 pthread_mutex_t mutex; //Mutex init
 timer_t timer; //Timer used to get timestamp.
+#endif
 
 //Prototypes to avoid the implicit declaration warning
+#ifndef USE_AESD_CHAR_DEVICE
 static void append_timestamp();
 static int timer_10();
+#endif
 
 void sig_handler(int signum)
 {
@@ -52,11 +52,13 @@ void sig_handler(int signum)
         syslog(LOG_DEBUG, "SIGINT received, exiting...");
     }
 
+    #ifndef USE_AESD_CHAR_DEVICE
     if(signum == SIGALRM)
     {
         append_timestamp();
         syslog(LOG_DEBUG, "SIGALARM");
     }
+    #endif
 
 }
 
@@ -70,28 +72,24 @@ void exit_handler()
         syslog(LOG_ERR, "Unable to close socket FD with an error: %d", errno);
     }
 
-    // status = close(acc_fd);
-    // if(status < 0)
-    // {
-    //     syslog(LOG_ERR, "Unable to close socket FD with an error: %d", errno);
-    // }
-
     status = close(filetotest_fd);
     if(status < 0)
     {
         syslog(LOG_ERR, "Unable to close socket FD with an error: %d", errno);
     }
-
+    
+    #ifndef USE_AESD_CHAR_DEVICE
     unlink("/var/tmp/aesdsocketdata");
     if(status < 0)
     {
         syslog(LOG_ERR, "Unable to close socket FD with an error: %d", errno);
     }
-
+    #endif
     //Destroy Mutex
+    #ifndef USE_AESD_CHAR_DEVICE
     pthread_mutex_destroy(&mutex);
     timer_delete(timer);
-
+    #endif
 
     closelog();
     exit(EXIT_SUCCESS);
@@ -312,12 +310,16 @@ void* threadfunc(void* thread_param)
     {
         nullterm_flag = 0;
 
+        #ifndef USE_AESD_CHAR_DEVICE
+
         //Mutex lock while access write operation to the file, for thread safety. 
         int ret = pthread_mutex_lock(&mutex);
         if(ret != 0)
         {
             perror("Mutex Lock");
         }
+        #endif
+
         //Write obtained packet to the file
         int ret_wr = write(filetotest_fd, packet_buffer, write_len);
         file_size += ret_wr; //Adding to the current file
@@ -550,7 +552,7 @@ int main(int argc, char **argv)
     }
 
     //permissions for this file is usr=rw, g=rw, oth = r
-    filetotest_fd = open("/var/tmp/aesdsocketdata", O_RDWR | O_CREAT | O_TRUNC, S_IWUSR | S_IRUSR | S_IWGRP | S_IRGRP | S_IROTH);
+    filetotest_fd = open(filename, O_RDWR | O_CREAT | O_TRUNC, S_IWUSR | S_IRUSR | S_IWGRP | S_IRGRP | S_IROTH);
 
     if(filetotest_fd < 0)
     {

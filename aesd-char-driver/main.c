@@ -1,3 +1,4 @@
+
 /**
  * @file aesdchar.c
  * @brief Functions and data related to the AESD char driver implementation
@@ -16,7 +17,7 @@
 #include <linux/printk.h>
 #include <linux/types.h>
 #include <linux/cdev.h>
-#include <linux/fs.h> // file_operations
+#include <linux/fs.h> 
 #include "aesdchar.h"
 #include "linux/slab.h"
 #include "linux/string.h"
@@ -30,13 +31,15 @@ struct aesd_dev aesd_device;
 
 int aesd_open(struct inode *inode, struct file *filp)
 {
-    struct aesd_dev *dev; /* Pointer to the aesd_dev struct elements*/ */
+    struct aesd_dev *dev; /* Pointer to the aesd_dev struct*/
     
     PDEBUG("open");
     
-	dev = container_of(inode->i_cdev, struct aesd_dev, cdev); /* The address of the container structure of cdev is returned and stored in dev  */
-	filp->private_data = dev; /* The open syscall sets this pointer to NULL before calling the open method to the driver. By assigning addr, other modules can use it.*/
-
+	dev = container_of(inode->i_cdev, struct aesd_dev, cdev);   //The address of the container structure where cdev is located is returned and stored in dev
+	filp->private_data = dev; //THe open syscall sets filp to NULL before calling the open method to the driver. By assigning addr, other modules can use it. 
+    /**
+     * TODO: handle open
+     */
     return 0;
 }
 
@@ -49,170 +52,163 @@ int aesd_release(struct inode *inode, struct file *filp)
     return 0;
 }
 
+
 ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
                 loff_t *f_pos)
 {
     ssize_t retval = 0;
     size_t offset_pos;
+    int kernel_buffer_count = 0;
     struct aesd_dev *dev = filp->private_data;
-    int kernel_buff_count = 0;
     struct aesd_buffer_entry *kernel_buff;
+
     PDEBUG("read %zu bytes with offset %lld",count,*f_pos);
+
+    mutex_lock(&aesd_device.lock);  //Kernel lock primitive
+
+    kernel_buff = aesd_circular_buffer_find_entry_offset_for_fpos(&dev->aesd_circular_buffer, *f_pos, &offset_pos);
+
+    if (kernel_buff == NULL) //if address was not returned. 
+    {      
+        *f_pos = 0; 
+        goto clean; //goto is not frowned upon in kernel programming, use it to jump to cleanup steps. 
+    }
+    
+    if ((kernel_buff->size - offset_pos) < count) 
+    {
+        *f_pos += (kernel_buff->size - offset_pos);    //Based on the returned offset and size, update f_pos. 
+        kernel_buffer_count = kernel_buff->size - offset_pos;
+    } 
+    
+    else 
+    {
+        *f_pos += count;
+        kernel_buffer_count = count;
+    }
+
+    if (copy_to_user(buf, kernel_buff->buffptr+offset_pos, kernel_buffer_count)) //copying to buf, which is a userspace buffer.
+    {      
+		retval = -EFAULT;
+		goto clean;
+	}
+
+    retval = kernel_buffer_count;     
     /**
      * TODO: handle read
      */
-
-     //Mutex required
-     mutex_lock(&aesd_device.lock_prim);
-    kernel_buff = aesd_circular_buffer_find_entry_offset_for_fpos(&device->aesd_circular_buffer, *f_pos, &offset_pos); //In the temp kernel buff, we store the address of next location to read. 
-
-    if(kernel_buff == NULL)
-    {
-        *f_pos = 0;
-        goto clean; //goto is not frowned upon in kernel programming. We use it to perform necessary cleanup steps. 
-    }
-
-    if((kernel_buff->size - offset_pos) < count) //count
-    {
-        *f_pos += (kernel_buff->size - offset_pos);
-        kernel_buff_count = (kernel_buff->size - offset_pos); //?
-    }
-
-    else
-    {
-        *f_pos += count;
-        kernel_buff_count = count;
-    }
-
-    if(copy_to_user(buf, kernel_buff->buffptr + offset_pos, kernel_buff_count))
-    {
-        retval = -EFAULT;
-        goto clean;
-    }
-    
-    retval = kernel_buff_count;
-
-    clean: mutex_unlock(&aesd_device.lock_prim);
+    clean: mutex_unlock(&aesd_device.lock);
 
     PDEBUG("Return Value %ld", retval);
 
-    
     return retval;
 }
 
 ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
                 loff_t *f_pos)
 {
-    ssize_t retval = 0;   //Return value for the function
-    char *tmp_buff;
-    int string_end_flag;
-    int tmp_iterator = 0;
-    int i; //For loop iterator
-    int temp_counter = 0; //Variable to hold the temporarily increased size based on complete/incomplte strings. 
+    ssize_t retval = 0; // Return Value
+    
+    char *temp_buffer; 
+    int i; // Loop iterator
+    int string_end_flag = 0; 
+    int temp_iterator = 0; 
+    int temp_counter = 0;
+    struct aesd_buffer_entry aesd_buffer_write_entry; 
     struct aesd_dev *dev;
-    struct aesd_buffer_entry aesd_buffer_write_entry;   //aesd_buffer_entry value of the struct. 
+
     char *ret_ptr;
+
     PDEBUG("write %zu bytes with offset %lld",count,*f_pos);
-    /**
-     * TODO: handle write
-     */
 
     dev = filp->private_data;
 
-    mutex_lock(&aesd_device.lock_prim);
-    tmp_buff = (char *)kmalloc(count, GFP_KERNEL); //May sleep, use mutex or semaphore. 
+    mutex_lock(&aesd_device.lock);  //kmalloc may sleep, use mutex to lock. 
 
-    if(tmp_buff == NULL)
+   
+    temp_buffer = (char *)kmalloc(count, GFP_KERNEL);   
+
+    if (temp_buffer == NULL) 
     {
         retval = -ENOMEM;
-        goto clean_exit;
-    }   
-
-    if(copy_from_user(tmp_buff, buf, count))    //Copy from the userspace buf into tmp_buff
-    {
-        retval = -EFAULT;
-        goto clean_exit;
+        goto exit_clean;
     }
+        
+    // Copying into the kernel buffer from buf
+    if (copy_from_user(temp_buffer, buf, count)) {
+        retval = -EFAULT;
+		goto exit_clean;
+	}
 
-    for(i=0; i < count; i++)
-    {
-        if(tmp_buff[i] == '\n')
-        {
-            string_end_flag = 1;    //Indicates written string is complete. 
-            tmp_iterator = i+1;     //Store the value of the index for '\n'
+    // Iterating over bytes received to check for "\n" character
+    for (i = 0; i < count; i++) {
+        if (temp_buffer[i] == '\n') {
+            string_end_flag = 1; // Setting packet complete flag to indicate that string is complete when \n is received. 
+            temp_iterator = i+1; // Setting temp_iterator value to store by indicating null character loc
             break;
         }
     }
 
-    if(dev->buffer_size == 0)
-    {
+    // Check if copy buffer size is 0; mallocing and copying local buffer into global buffer
+    if (dev->buffer_size == 0) {
         dev->copy_buffer_ptr = (char *)kmalloc(count, GFP_KERNEL);
-        if(dev->copy_buffer_ptr == NULL)
-        {
+        if (dev->copy_buffer_ptr == NULL) {
             retval = -ENOMEM;
             goto free;
         }
-        memcpy(dev->copy_buffer_ptr, tmp_buff, count);
-        dev->buffer_size +=count;
-    }
-
-    else
-    {
-        //Handling partial write
-        if(string_end_flag)
+        memcpy(dev->copy_buffer_ptr, temp_buffer, count);
+        dev->buffer_size += count;
+    } 
+    else {
+        
+        // Case when write command is issued without '\n', append next received chars to it. 
+        if (string_end_flag)
         {
-            temp_counter = tmp_iterator;
+            temp_counter = temp_iterator;
         }
-
         else
         {
             temp_counter = count;
         }
 
-        //Reallocate the copy buffer size based on temporary incrementing of the size variable. 
-        dev->copy_buffer_ptr = (char*)krealloc(dev->copy_buffer_ptr, dev->buffer_size + temp_counter, GFP_KERNEL);
+        // Reallocate copy buffer size based on temporary size increment variable
 
-        if(dev->copy_buffer_ptr == NULL)
+        dev->copy_buffer_ptr = (char *)krealloc(dev->copy_buffer_ptr, dev->buffer_size + temp_counter, GFP_KERNEL);
+        if (dev->copy_buffer_ptr == NULL) 
         {
             retval = -ENOMEM;
             goto free;
         }
 
-        memcpy(dev->copy_buffer_ptr + dev->buffer_size, tmp_buff, temp_counter);
-        dev->buffer_size += temp_counter;
+        // Copying temp_buffer contents into copy_buffer
+        memcpy(dev->copy_buffer_ptr + dev->buffer_size, temp_buffer, temp_counter);
+        dev->buffer_size += temp_counter;        
     }
-
-    if(string_end_flag)
+    
+    // Adding entry onto circular buffer if packet is complete
+    if (string_end_flag) 
     {
-        //Move the data onto the circular buffer
 
+        // Adding entry onto circular buffer
         aesd_buffer_write_entry.buffptr = dev->copy_buffer_ptr;
         aesd_buffer_write_entry.size = dev->buffer_size;
-        
+        ret_ptr = aesd_circular_buffer_add_entry(&dev->aesd_circular_buffer, &aesd_buffer_write_entry);
     
+        // Freeing return_pointer if buffer is full 
+        if (ret_ptr != NULL)
+            kfree(ret_ptr);
+        
+        dev->buffer_size = 0;
+    } 
 
-    ret_ptr = aesd_circular_buffer_add_entry(&dev->aesd_circular_buffer, &aesd_buffer_write_entry);
+    retval = count;
 
-    if(ret_ptr != NULL)
-    {
-        kfree(ret_ptr);
-    }
-
-    dev->buffer_size = 0;
-
-    }
-
-
-retval = count;
-
-free: kfree(tmp_buff);
-clean_exit: mutex_unlock(&aesd_device.lock_prim);
-
-
+    /**
+     * TODO: handle write
+     */
+    free: kfree(temp_buffer);
+    exit_clean: mutex_unlock(&aesd_device.lock);
     return retval;
-
 }
-
 
 struct file_operations aesd_fops = {
     .owner =    THIS_MODULE,
@@ -254,8 +250,7 @@ int aesd_init_module(void)
     /**
      * TODO: initialize the AESD specific portion of the device
      */
-
-     mutex_init(&aesd_device.lock_prim);
+    mutex_init(&aesd_device.lock);
 
     result = aesd_setup_cdev(&aesd_device);
 
@@ -268,7 +263,6 @@ int aesd_init_module(void)
 
 void aesd_cleanup_module(void)
 {
-
     uint8_t index;
     struct aesd_buffer_entry *entry;
     dev_t devno = MKDEV(aesd_major, aesd_minor);
@@ -279,13 +273,11 @@ void aesd_cleanup_module(void)
      * TODO: cleanup AESD specific poritions here as necessary
      */
 
-     AESD_CIRCULAR_BUFFER_FOREACH(entry, &aesd_device.aesd_circular_buffer, index)
-     {
-        kfree(entry->buffptr);
-     }
+    AESD_CIRCULAR_BUFFER_FOREACH(entry, &aesd_device.aesd_circular_buffer, index) {
+      kfree(entry->buffptr);
+    }
+    mutex_destroy(&aesd_device.lock);
 
-
-    mutex_destroy(&aesd_device.lock_prim);
     unregister_chrdev_region(devno, 1);
 }
 

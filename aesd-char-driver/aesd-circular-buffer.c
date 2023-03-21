@@ -8,6 +8,7 @@
  *
  */
 
+
 #ifdef __KERNEL__
 #include <linux/string.h>
 #else
@@ -15,7 +16,6 @@
 #endif
 
 #include "aesd-circular-buffer.h"
-
 
 
 /**
@@ -115,6 +115,17 @@ char *aesd_circular_buffer_add_entry(struct aesd_circular_buffer *buffer, const 
         return NULL;
     }
 
+    if(buffer->full)
+    {
+        return_ptr = (char *)buffer->entry[buffer->out_offs].buffptr;
+        buffer->out_offs++;
+
+        if(buffer->out_offs == AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED)
+        {
+            buffer->out_offs = 0;
+        }
+    }
+
     /* Instering entry on write pointer */
     buffer->entry[buffer->in_offs].buffptr = add_entry->buffptr;
     buffer->entry[buffer->in_offs].size = add_entry->size;
@@ -127,17 +138,8 @@ char *aesd_circular_buffer_add_entry(struct aesd_circular_buffer *buffer, const 
         buffer->in_offs = 0;
     }
 
-    if(buffer->full)
-    {
-        buffer->out_offs++;
 
-        if(buffer->out_offs == AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED)
-        {
-            buffer->out_offs = 0;
-        }
 
-        return_ptr = (char *)buffer->entry[buffer->in_offs].buffptr;
-    }
     if((buffer->out_offs == buffer->in_offs) && (!buffer->full))
     {
         buffer->full = 1;
@@ -145,7 +147,6 @@ char *aesd_circular_buffer_add_entry(struct aesd_circular_buffer *buffer, const 
     return return_ptr;
 
 }
-
 /**
 * Initializes the circular buffer described by @param buffer to an empty struct
 */

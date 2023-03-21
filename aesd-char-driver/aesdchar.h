@@ -29,16 +29,15 @@ struct aesd_dev
     /**
      * TODO: Add structure(s) and locks needed to complete assignment requirements
      */
+    struct aesd_circular_buffer aesd_circular_buffer; //Circular buffer elements from A7
 
-     struct aesd_circular_buffer aesd_circular_buffer; //Circular buffer elements from A7
+    struct mutex lock;     //Kernel locking primitive struct mutex
 
-     struct mutex lock_prim;   //Kernel locking primitive struct mutex
+    char *copy_buffer_ptr; //Used to store entries on the circular buffer
 
-     char *copy_buffer_ptr;   //Used to store entries on the circular buffer
+    size_t buffer_size; //Size of the copy buffer.
 
-     size_t buffer_size;      //Size of the copy buffer. 
-
-     struct cdev cdev;     /* Char device structure      */
+    struct cdev cdev;     //Char device structure
 };
 
 
