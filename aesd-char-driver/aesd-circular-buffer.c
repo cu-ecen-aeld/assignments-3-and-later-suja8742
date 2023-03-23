@@ -8,6 +8,7 @@
  *
  */
 
+
 #ifdef __KERNEL__
 #include <linux/string.h>
 #else
@@ -15,7 +16,6 @@
 #endif
 
 #include "aesd-circular-buffer.h"
-
 
 
 /**
@@ -98,20 +98,32 @@ struct aesd_buffer_entry *aesd_circular_buffer_find_entry_offset_for_fpos(struct
 * Any necessary locking must be handled by the caller
 * Any memory referenced in @param add_entry must be allocated by and/or must have a lifetime managed by the caller.
 */
-void aesd_circular_buffer_add_entry(struct aesd_circular_buffer *buffer, const struct aesd_buffer_entry *add_entry)
+char *aesd_circular_buffer_add_entry(struct aesd_circular_buffer *buffer, const struct aesd_buffer_entry *add_entry)
 {
     /**
     * TODO: implement per description
     */
 
+    char *return_ptr = NULL;
     if(buffer == NULL)
     {
-        return;
+        return NULL;
     }
 
     if(add_entry == NULL)
     {
-        return;
+        return NULL;
+    }
+
+    if(buffer->full)
+    {
+        return_ptr = (char *)buffer->entry[buffer->out_offs].buffptr;
+        buffer->out_offs++;
+
+        if(buffer->out_offs == AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED)
+        {
+            buffer->out_offs = 0;
+        }
     }
 
     /* Instering entry on write pointer */
@@ -126,23 +138,15 @@ void aesd_circular_buffer_add_entry(struct aesd_circular_buffer *buffer, const s
         buffer->in_offs = 0;
     }
 
-    if(buffer->full)
-    {
-        buffer->out_offs++;
 
-        if(buffer->out_offs == AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED)
-        {
-            buffer->out_offs = 0;
-        }
-    }
+
     if((buffer->out_offs == buffer->in_offs) && (!buffer->full))
     {
         buffer->full = 1;
     }
-    return;
+    return return_ptr;
 
 }
-
 /**
 * Initializes the circular buffer described by @param buffer to an empty struct
 */
