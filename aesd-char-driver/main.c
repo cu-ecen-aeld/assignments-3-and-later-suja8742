@@ -21,6 +21,10 @@
 #include "aesdchar.h"
 #include "linux/slab.h"
 #include "linux/string.h"
+#include "aesd_ioctl.h"
+
+
+
 int aesd_major =   0; // use dynamic major
 int aesd_minor =   0;
 
@@ -116,13 +120,15 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
     struct aesd_buffer_entry aesd_buffer_write_entry; 
     struct aesd_dev *dev;
 
+
+
     char *ret_ptr;
 
     PDEBUG("write %zu bytes with offset %lld",count,*f_pos);
 
     dev = filp->private_data;
 
-    mutex_lock(&aesd_device.lock);  //kmalloc may sleep, use mutex to lock. 
+    
 
    
     temp_buffer = (char *)kmalloc(count, GFP_KERNEL);   
@@ -132,11 +138,12 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
         retval = -ENOMEM;
         goto exit_clean;
     }
-        
+    mutex_lock(&aesd_device.lock);  //kmalloc may sleep, use mutex to lock. 
+
     // Copying into the kernel buffer from buf
     if (copy_from_user(temp_buffer, buf, count)) {
         retval = -EFAULT;
-		goto exit_clean;
+		goto free;
 	}
 
     // Iterating over bytes received to check for "\n" character
@@ -210,12 +217,128 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
     return retval;
 }
 
+static long aesd_adjust_file_offset(struct file *filp, unsigned int write_cmd, unsigned int write_cmd_offset) { //P)arams and return based on the lecture
+   
+   struct aesd_dev *dev = filp->private_data;
+
+    long ret_val = 0;
+
+    int fpos = 0;    //Local variable to update the filp->f_pos
+
+    int i = 0;  //Loop iterator
+
+    //Check for valid write_cmd and write_cmd offset values
+
+    //Return error if the command has not been written as of yet. 
+
+    if(write_cmd > (AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED - 1))   //Out of range write_cmd
+    {
+        //Return -EINVAL if write command is out of range
+        return -EINVAL;
+
+    }
+
+    if(write_cmd_offset >= dev->aesd_circular_buffer.entry[write_cmd].size) //Error case  where offset is >= size of command
+    {
+        //Return -EINVAL if the write command offset is out of range
+        return -EINVAL;
+    }
+
+    mutex_lock(&aesd_device.lock);
+
+    for(i=0; i<write_cmd; i++) {
+        //iterate to write_cmd entry in the buffer
+
+        if(!dev->aesd_circular_buffer.entry[i].size)    //If the size of any entry is 0, return out and free the lock.
+        {
+            ret_val = -EINVAL; //Invalid value
+            goto clean;
+        }
+
+        fpos += dev->aesd_circular_buffer.entry[i].size;    //Update fpos based on the size of each entry.
+    }
+    
+    fpos += write_cmd_offset;   //Add the relative offset after looping to the appropriate write_cmd.
+
+    filp->f_pos = fpos;     //Update the filp structure f_pos member for access. 
+
+    clean: mutex_unlock(&aesd_device.lock);
+    return ret_val;
+
+}
+
+long aesd_ioctl(struct file *filp, unsigned int cmd, unsigned long arg) {
+
+    long ret_val = 0;
+    struct aesd_seekto seekto;
+
+    //Reference: Linux Device Drivers textbook
+
+    if(_IOC_TYPE(cmd) != AESD_IOC_MAGIC)    //Supported Magic number is 0x16. Error check to verify that. 
+    {
+        return -ENOTTY;     //"No typewriter" - Error code for invalid ioctl
+    }
+
+    if(_IOC_NR(cmd) > AESDCHAR_IOC_MAXNR)   //Bounds check - Maximum number of commands allowed. 
+    {
+        return -ENOTTY; 
+    }
+
+    //Implemented based on lecture slides.
+    switch(cmd) {
+
+        case AESDCHAR_IOCSEEKTO:
+        
+            
+            if (copy_from_user(&seekto, (const void __user *)arg, sizeof(seekto)) != 0) {
+                ret_val = EFAULT;
+            } else {
+               aesd_adjust_file_offset(filp, seekto.write_cmd, seekto.write_cmd_offset); //adjust file offset
+            }
+            break;
+        default:
+            ret_val = -ENOTTY;;
+            //ERROR default
+            break;
+            
+    }
+
+    return ret_val;
+
+}
+
+loff_t aesd_llseek_custom_imp(struct file *filp, loff_t offset_ab, int whence)
+{
+    //Option 2 for custom llseek_custom implementation as described in lectures.
+    //Parameters modified based on man llseek. The filp, abs offset value, result to return, and whence, to support SEEK_CUR, SEEK_SET, SEEK_END.
+
+    loff_t result_retval = 0;
+
+    struct aesd_dev *dev;
+    dev = filp->private_data;
+
+    mutex_lock(&aesd_device.lock);  //Kernel lock used to implement fixed_size_llseek
+
+    //Using fixed_size_llseek for logic as mentioned in option 2.
+    result_retval = fixed_size_llseek(filp, offset_ab, whence, get_current_buffer_size(&dev->aesd_circular_buffer));    
+
+    mutex_unlock(&aesd_device.lock);
+
+    return result_retval;
+    
+
+}
+
+
+
 struct file_operations aesd_fops = {
     .owner =    THIS_MODULE,
     .read =     aesd_read,
     .write =    aesd_write,
     .open =     aesd_open,
     .release =  aesd_release,
+    .llseek =   aesd_llseek_custom_imp,
+    .unlocked_ioctl = aesd_ioctl,
 };
 
 static int aesd_setup_cdev(struct aesd_dev *dev)
@@ -280,6 +403,7 @@ void aesd_cleanup_module(void)
 
     unregister_chrdev_region(devno, 1);
 }
+
 
 
 

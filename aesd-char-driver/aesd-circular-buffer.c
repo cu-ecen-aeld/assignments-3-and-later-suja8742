@@ -147,6 +147,19 @@ char *aesd_circular_buffer_add_entry(struct aesd_circular_buffer *buffer, const 
     return return_ptr;
 
 }
+
+//This function is returing the current size based on the buffer[].size of each individual entry, for llseek. 
+size_t get_current_buffer_size(struct aesd_circular_buffer *buf)
+{
+    size_t i; //iterator to obtain size. 
+    size_t ret_size = 0;
+    
+    for(i=0; i < AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED; i++) { //iterate through the buffer and obtain size for llseek. 
+        ret_size += buf->entry[i].size;
+    }
+
+    return ret_size;
+}
 /**
 * Initializes the circular buffer described by @param buffer to an empty struct
 */
