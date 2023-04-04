@@ -66,14 +66,13 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
     struct aesd_dev *dev = filp->private_data;
     struct aesd_buffer_entry *kernel_buff;
 
-    PDEBUG("read %zu bytes with offset %lld",count,*f_pos);
-
     mutex_lock(&aesd_device.lock);  //Kernel lock primitive
 
     kernel_buff = aesd_circular_buffer_find_entry_offset_for_fpos(&dev->aesd_circular_buffer, *f_pos, &offset_pos);
 
     if (kernel_buff == NULL) //if address was not returned. 
     {      
+        PDEBUG("Kernel buffer allocation failed: Read");
         *f_pos = 0; 
         goto clean; //goto is not frowned upon in kernel programming, use it to jump to cleanup steps. 
     }
@@ -91,12 +90,14 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
     }
 
     if (copy_to_user(buf, kernel_buff->buffptr+offset_pos, kernel_buffer_count)) //copying to buf, which is a userspace buffer.
-    {      
+    {    
+        PDEBUG("copy_to_user() fails: Read");  
 		retval = -EFAULT;
 		goto clean;
 	}
 
-    retval = kernel_buffer_count;     
+    retval = kernel_buffer_count; 
+    
     /**
      * TODO: handle read
      */
@@ -124,24 +125,21 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
 
     char *ret_ptr;
 
-    PDEBUG("write %zu bytes with offset %lld",count,*f_pos);
-
     dev = filp->private_data;
+    mutex_lock(&aesd_device.lock);  //kmalloc may sleep, use mutex to lock. 
 
-    
-
-   
     temp_buffer = (char *)kmalloc(count, GFP_KERNEL);   
 
     if (temp_buffer == NULL) 
     {
+        PDEBUG("Temp buffer allocation failled: write");
         retval = -ENOMEM;
         goto exit_clean;
     }
-    mutex_lock(&aesd_device.lock);  //kmalloc may sleep, use mutex to lock. 
 
     // Copying into the kernel buffer from buf
     if (copy_from_user(temp_buffer, buf, count)) {
+        PDEBUG("copy_from_user() failed: Write");
         retval = -EFAULT;
 		goto free;
 	}
@@ -182,6 +180,7 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
         dev->copy_buffer_ptr = (char *)krealloc(dev->copy_buffer_ptr, dev->buffer_size + temp_counter, GFP_KERNEL);
         if (dev->copy_buffer_ptr == NULL) 
         {
+            PDEBUG("Realloc failed");
             retval = -ENOMEM;
             goto free;
         }
@@ -202,7 +201,10 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
     
         // Freeing return_pointer if buffer is full 
         if (ret_ptr != NULL)
+        {
+            PDEBUG("Return Pointer is Null: Write");
             kfree(ret_ptr);
+        }
         
         dev->buffer_size = 0;
     } 
