@@ -76,6 +76,12 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
         *f_pos = 0; 
         goto clean; //goto is not frowned upon in kernel programming, use it to jump to cleanup steps. 
     }
+
+    if(kernel_buff->buffptr == NULL)    //The kernel buffer buffptr check added to fix copy_to_user() issue.
+    {
+        PDEBUG("Kernel buffer->bufptr allocation failed: Read");
+        goto clean; 
+    }
     
     if ((kernel_buff->size - offset_pos) < count) 
     {
@@ -89,6 +95,7 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
         kernel_buffer_count = count;
     }
 
+    PDEBUG("copy_to_user(): %d, %d ", offset_pos, kernel_buffer_count);
     if (copy_to_user(buf, kernel_buff->buffptr+offset_pos, kernel_buffer_count)) //copying to buf, which is a userspace buffer.
     {    
         PDEBUG("copy_to_user() fails: Read");  
@@ -126,7 +133,6 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
     char *ret_ptr;
 
     dev = filp->private_data;
-    mutex_lock(&aesd_device.lock);  //kmalloc may sleep, use mutex to lock. 
 
     temp_buffer = (char *)kmalloc(count, GFP_KERNEL);   
 
@@ -136,6 +142,8 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
         retval = -ENOMEM;
         goto exit_clean;
     }
+
+    mutex_lock(&aesd_device.lock);  //kmalloc may sleep, use mutex to lock. 
 
     // Copying into the kernel buffer from buf
     if (copy_from_user(temp_buffer, buf, count)) {
@@ -309,7 +317,7 @@ long aesd_ioctl(struct file *filp, unsigned int cmd, unsigned long arg) {
 
 }
 
-loff_t aesd_llseek_custom_imp(struct file *filp, loff_t offset_ab, int whence)
+loff_t aesd_llseek_custom_imp(struct file *filp, loff_t offset_ab, int whence)  
 {
     //Option 2 for custom llseek_custom implementation as described in lectures.
     //Parameters modified based on man llseek. The filp, abs offset value, result to return, and whence, to support SEEK_CUR, SEEK_SET, SEEK_END.
