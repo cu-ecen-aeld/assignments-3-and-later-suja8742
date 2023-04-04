@@ -343,7 +343,7 @@ void* threadfunc(void* thread_param)
 
         int ioctl_str_len = 0; //Obtain length of the ioctl string
 
-       // int is_ioctl = 0;   //Flag for checks while reading 
+        int is_ioctl = 0;   //Flag for checks while reading 
         
         ioctl_str_len = strlen(ioctl_format_str);   //Obtain the length of "AESD_IOCHARSEEKTO:"
 
@@ -370,12 +370,12 @@ void* threadfunc(void* thread_param)
                 syslog(LOG_ERR, "Error with ioctl, errno: %d\n", errno);
             }
             
-          //  is_ioctl = 1;
+            is_ioctl = 1;
         }
 
         else //Write as we did previously if ioctl string not received
         {   
-           // is_ioctl = 0;
+            is_ioctl = 0;
             ret_wr = write(filetotest_fd, packet_buffer, write_len);   
         }
 
@@ -410,7 +410,7 @@ void* threadfunc(void* thread_param)
             }
         }
 
-        if((bytes_read == -1))
+        if((is_ioctl == 0 )&& (bytes_read == -1))
         {
             perror("Read");
         }
