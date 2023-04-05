@@ -18,6 +18,7 @@
 #include <netinet/in.h>
 #include <pthread.h>
 #include <sys/time.h>
+#include "../aesd-char-driver/aesd_ioctl.h"
 
 /* Macros */
 
@@ -226,6 +227,12 @@ void* threadfunc(void* thread_param)
     //Bytes from packets from recv() without \n and less than 1024 bytes
     int bytes_cnt = 0;
 
+    //Return write value
+    int ret_wr = 0;
+
+    //The formatted string for the ioctl command as mentioned in the lecture slides. 
+    const char* ioctl_format_str = "AESDCHAR_IOCSEEKTO:";
+
     //Attempting to print the IP address of the accepted client connection on success of accept using the inet_ntop function
    // struct sockaddr_in *ptr = (struct sockaddr_in *)&accept_addr;
    // syslog(LOG_DEBUG, "Accepted connection from IP : %s", inet_ntop(AF_INET, &ptr->sin_addr, address_str, sizeof(address_str)));
@@ -326,11 +333,53 @@ void* threadfunc(void* thread_param)
         char *filename = "/var/tmp/aesdsocketdata";
         #endif
 
-        //Write obtained packet to the file
+        //Write obtained packet to the file IF it is not the "AESDCHAR_IOCSEEKTO:" string. If it is, use the case for the ioctl command below.
+        //If ioctl case, then do not write the string. 
+        //Extract the values of write_cmd and write_cmd_offset.
         int filetotest_fd = open(filename, O_RDWR | O_CREAT | O_APPEND, S_IWUSR | S_IRUSR | S_IWGRP | S_IRGRP | S_IROTH);
-        int ret_wr = write(filetotest_fd, packet_buffer, write_len);
-        file_size += ret_wr; //Adding to the current file
 
+                                /* IOCTL SUPPORT*/
+
+
+        int ioctl_str_len = 0; //Obtain length of the ioctl string
+
+        int is_ioctl = 0;   //Flag for checks while reading 
+        
+        ioctl_str_len = strlen(ioctl_format_str);   //Obtain the length of "AESD_IOCHARSEEKTO:"
+
+        if(strncmp(packet_buffer, ioctl_format_str, ioctl_str_len) == 0 )     //Check if the string received is the ioctl format str. strncmp returns 0 on success. 
+        {
+            struct aesd_seekto seekto;  //Init
+            seekto.write_cmd = 0;
+            seekto.write_cmd_offset = 0;
+            char *ioctl_buffer = packet_buffer; //Create a buffer locally to modify and extract write_cmd and write_cmd_offset
+
+            ioctl_buffer+=ioctl_str_len;    //Sets the ptr to the end of the string so we can extract only X&Y values.
+        
+            printf("The string is: %s and the length is %d", ioctl_buffer, ioctl_str_len);
+            //Credit:
+            //Extracting values from a formatted string - educative.io (sscanf) and ChatGPT
+            //Using sscanf to extract X&Y values as an alternative to atoi or similar methods. 
+            if(sscanf(ioctl_buffer, "%d,%d", &seekto.write_cmd, &seekto.write_cmd_offset) < 0) //Checking for EOF or other types of error
+            {
+                syslog(LOG_ERR, "Error with sscanf, errno: %d", errno);
+            }
+
+            if(ioctl(filetotest_fd, AESDCHAR_IOCSEEKTO, &seekto))       //ioctl command with existing opened file descriptor. Interfaces with driver. 
+            {
+                syslog(LOG_ERR, "Error with ioctl, errno: %d\n", errno);
+            }
+            
+            is_ioctl = 1;
+        }
+
+        else //Write as we did previously if ioctl string not received
+        {   
+            is_ioctl = 0;
+            ret_wr = write(filetotest_fd, packet_buffer, write_len);   
+        }
+
+        file_size += ret_wr; //Adding len to the current file size
         #ifndef USE_AESD_CHAR_DEVICE
         lseek(filetotest_fd, 0, SEEK_SET); //Set the file descriptor to the top of the file
         #endif
@@ -338,17 +387,9 @@ void* threadfunc(void* thread_param)
         char *read_buffer = NULL;
         int read_buffer_size;
 
-        if(file_size < WRITE_BUFFER_SIZE)
-        {
-            read_buffer = (char*)malloc(file_size);
-            read_buffer_size = file_size;
-        }
-
-        else
-        {
-            read_buffer = (char*)malloc(WRITE_BUFFER_SIZE);
-            read_buffer_size = WRITE_BUFFER_SIZE;
-        }
+    
+        read_buffer = (char*)malloc(WRITE_BUFFER_SIZE);
+        read_buffer_size = WRITE_BUFFER_SIZE;
 
         if(read_buffer == NULL)
         {
@@ -358,7 +399,6 @@ void* threadfunc(void* thread_param)
         //Reading into the read buffer
         ssize_t bytes_read;
         int bytes_sent;
-        
         while((bytes_read = read(filetotest_fd, read_buffer, read_buffer_size)) > 0)
         {
             bytes_sent = send(thread_local_stg->client_connected_fd, read_buffer, bytes_read, 0);
@@ -370,7 +410,7 @@ void* threadfunc(void* thread_param)
             }
         }
 
-        if(bytes_read == -1)
+        if((is_ioctl == 0 )&& (bytes_read == -1))
         {
             perror("Read");
         }
